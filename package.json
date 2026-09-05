@@ -1,0 +1,12 @@
+{
+  "name": "vigia-backend",
+  "version": "1.7.1",
+  "private": true,
+  "description": "Backend VIGIA com persistência permanente via Supabase/PostgreSQL.",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
