@@ -1,16 +1,25 @@
 // ======================================================
 // VIGIA BACKEND
-// V1.7.2
+// V1.8.0
 // Desenvolvedor: Felipe Skendel
 //
-// Persistência permanente via Supabase/PostgreSQL.
-// Variáveis obrigatórias no Render:
+// Supabase/PostgreSQL + monitoramento server-side.
+// Primeira loja monitorada na nuvem: Mercado Livre.
+//
+// Variáveis obrigatórias:
 //   SUPABASE_URL
 //   SUPABASE_SERVICE_ROLE_KEY
+//
+// Variável recomendada para proteger execução remota:
+//   MONITOR_SECRET
 // ======================================================
 
 const http = require("http");
 const crypto = require("crypto");
+const {
+    executarMonitoramento,
+    obterEstadoMonitoramento
+} = require("./monitor");
 
 const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -23,6 +32,10 @@ const SUPABASE_SERVICE_ROLE_KEY = String(
     process.env.SUPABASE_SERVICE_ROLE_KEY || ""
 ).trim();
 
+const MONITOR_SECRET = String(
+    process.env.MONITOR_SECRET || ""
+).trim();
+
 function normalizarSupabaseUrl(valor) {
     let url = String(valor || "").trim();
 
@@ -30,16 +43,10 @@ function normalizarSupabaseUrl(valor) {
         return "";
     }
 
-    // Remove aspas acidentais copiadas para o Render.
     url = url.replace(/^["']|["']$/g, "");
-
-    // Remove /rest/v1 caso tenha sido colocado na variável.
     url = url.replace(/\/rest\/v1\/?$/i, "");
-
-    // Remove barras finais.
     url = url.replace(/\/+$/g, "");
 
-    // Se veio apenas o project ref, monta a URL oficial.
     if (!/^https?:\/\//i.test(url)) {
         if (/^[a-z0-9]{15,40}$/i.test(url)) {
             url = `https://${url}.supabase.co`;
@@ -60,7 +67,10 @@ function agora() {
 }
 
 function configurado() {
-    return Boolean(SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY);
+    return Boolean(
+        SUPABASE_URL &&
+        SUPABASE_SERVICE_ROLE_KEY
+    );
 }
 
 function chaveProduto(url) {
@@ -81,7 +91,9 @@ function headersSupabase(extra = {}) {
 
 async function supabase(path, options = {}) {
     if (!configurado()) {
-        throw new Error("Supabase não configurado no ambiente.");
+        throw new Error(
+            "Supabase não configurado no ambiente."
+        );
     }
 
     const endpoint =
@@ -125,7 +137,9 @@ async function supabase(path, options = {}) {
                 ? dados
                 : JSON.stringify(dados);
 
-        throw new Error(`Supabase ${resposta.status}: ${detalhe}`);
+        throw new Error(
+            `Supabase ${resposta.status}: ${detalhe}`
+        );
     }
 
     return dados;
@@ -135,10 +149,13 @@ function json(res, status, payload) {
     const body = JSON.stringify(payload);
 
     res.writeHead(status, {
-        "Content-Type": "application/json; charset=utf-8",
+        "Content-Type":
+            "application/json; charset=utf-8",
         "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Headers": "Content-Type",
-        "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+        "Access-Control-Allow-Headers":
+            "Content-Type, X-Vigia-Monitor-Secret",
+        "Access-Control-Allow-Methods":
+            "GET,POST,OPTIONS",
         "Cache-Control": "no-store"
     });
 
@@ -153,16 +170,24 @@ function receberBody(req) {
             body += chunk;
 
             if (body.length > 2_000_000) {
-                reject(new Error("Payload muito grande."));
+                reject(
+                    new Error("Payload muito grande.")
+                );
                 req.destroy();
             }
         });
 
         req.on("end", () => {
             try {
-                resolve(body ? JSON.parse(body) : {});
+                resolve(
+                    body
+                        ? JSON.parse(body)
+                        : {}
+                );
             } catch {
-                reject(new Error("JSON inválido."));
+                reject(
+                    new Error("JSON inválido.")
+                );
             }
         });
 
@@ -200,7 +225,10 @@ function precoEfetivoProduto(produto) {
     for (const valor of candidatos) {
         const numero = Number(valor);
 
-        if (Number.isFinite(numero) && numero > 0) {
+        if (
+            Number.isFinite(numero) &&
+            numero > 0
+        ) {
             return numero;
         }
     }
@@ -210,29 +238,40 @@ function precoEfetivoProduto(produto) {
 
 async function upsertProduto(produto, appVersion) {
     const id = chaveProduto(produto.url);
-    const precoEfetivo = precoEfetivoProduto(produto);
+    const precoEfetivo =
+        precoEfetivoProduto(produto);
 
     const registro = {
         id,
         url: produto.url,
-        nome: produto.nome || produto.titulo || null,
+        nome:
+            produto.nome ||
+            produto.titulo ||
+            null,
         loja: produto.loja || null,
         preco:
-            Number.isFinite(Number(produto.precoAtual))
+            Number.isFinite(
+                Number(produto.precoAtual)
+            )
                 ? Number(produto.precoAtual)
                 : (
-                    Number.isFinite(Number(produto.preco))
+                    Number.isFinite(
+                        Number(produto.preco)
+                    )
                         ? Number(produto.preco)
                         : null
                 ),
         preco_efetivo: precoEfetivo,
         preco_alvo:
-            Number.isFinite(Number(produto.precoAlvo))
+            Number.isFinite(
+                Number(produto.precoAlvo)
+            )
                 ? Number(produto.precoAlvo)
                 : null,
         ativo: produto.ativo !== false,
         dados: produto,
-        app_version: appVersion || "1.7.2",
+        app_version:
+            appVersion || "1.8.0",
         updated_at: agora()
     };
 
@@ -241,7 +280,8 @@ async function upsertProduto(produto, appVersion) {
         {
             method: "POST",
             headers: {
-                Prefer: "resolution=merge-duplicates,return=minimal"
+                Prefer:
+                    "resolution=merge-duplicates,return=minimal"
             },
             body: JSON.stringify([registro])
         }
@@ -250,14 +290,24 @@ async function upsertProduto(produto, appVersion) {
     return id;
 }
 
-async function upsertHistorico(productId, produto) {
-    const historico = normalizarHistorico(produto);
-    const atual = precoEfetivoProduto(produto);
+async function upsertHistorico(
+    productId,
+    produto
+) {
+    const historico =
+        normalizarHistorico(produto);
+
+    const atual =
+        precoEfetivoProduto(produto);
 
     if (
         atual &&
         !historico.some(
-            item => Math.abs(Number(item.preco) - atual) < 0.009
+            item =>
+                Math.abs(
+                    Number(item.preco) -
+                    atual
+                ) < 0.009
         )
     ) {
         historico.push({
@@ -273,18 +323,20 @@ async function upsertHistorico(productId, produto) {
         return 0;
     }
 
-    const registros = historico.map(item => ({
-        product_id: productId,
-        preco: Number(item.preco),
-        captured_at: item.data
-    }));
+    const registros =
+        historico.map(item => ({
+            product_id: productId,
+            preco: Number(item.preco),
+            captured_at: item.data
+        }));
 
     await supabase(
         "price_history?on_conflict=product_id,captured_at,preco",
         {
             method: "POST",
             headers: {
-                Prefer: "resolution=ignore-duplicates,return=minimal"
+                Prefer:
+                    "resolution=ignore-duplicates,return=minimal"
             },
             body: JSON.stringify(registros)
         }
@@ -305,7 +357,9 @@ async function listarProdutos() {
     for (const linha of linhas) {
         const historicoResp =
             await supabase(
-                `price_history?product_id=eq.${encodeURIComponent(linha.id)}&select=preco,captured_at&order=captured_at.asc`,
+                `price_history?product_id=eq.${encodeURIComponent(
+                    linha.id
+                )}&select=preco,captured_at&order=captured_at.asc`,
                 { method: "GET" }
             ) || [];
 
@@ -313,8 +367,14 @@ async function listarProdutos() {
             ...(linha.dados || {}),
             id: linha.id,
             url: linha.url,
-            nome: linha.nome ?? linha.dados?.nome ?? null,
-            loja: linha.loja ?? linha.dados?.loja ?? null,
+            nome:
+                linha.nome ??
+                linha.dados?.nome ??
+                null,
+            loja:
+                linha.loja ??
+                linha.dados?.loja ??
+                null,
             precoAtual:
                 linha.preco ??
                 linha.dados?.precoAtual ??
@@ -329,11 +389,15 @@ async function listarProdutos() {
                 null,
             ativo: linha.ativo,
             appVersion: linha.app_version,
-            backendUpdatedAt: linha.updated_at,
-            historico: historicoResp.map(item => ({
-                preco: Number(item.preco),
-                data: item.captured_at
-            }))
+            backendUpdatedAt:
+                linha.updated_at,
+            historico:
+                historicoResp.map(item => ({
+                    preco:
+                        Number(item.preco),
+                    data:
+                        item.captured_at
+                }))
         });
     }
 
@@ -345,7 +409,9 @@ async function historicoPorUrl(productUrl) {
 
     const produtos =
         await supabase(
-            `products?id=eq.${encodeURIComponent(id)}&select=id&limit=1`,
+            `products?id=eq.${encodeURIComponent(
+                id
+            )}&select=id&limit=1`,
             { method: "GET" }
         ) || [];
 
@@ -358,26 +424,73 @@ async function historicoPorUrl(productUrl) {
 
     const linhas =
         await supabase(
-            `price_history?product_id=eq.${encodeURIComponent(id)}&select=preco,captured_at&order=captured_at.asc`,
+            `price_history?product_id=eq.${encodeURIComponent(
+                id
+            )}&select=preco,captured_at&order=captured_at.asc`,
             { method: "GET" }
         ) || [];
 
     return {
         found: true,
-        history: linhas.map(item => ({
-            preco: Number(item.preco),
-            data: item.captured_at
-        }))
+        history:
+            linhas.map(item => ({
+                preco:
+                    Number(item.preco),
+                data:
+                    item.captured_at
+            }))
     };
 }
+
+function segredoMonitorValido(req) {
+    if (!MONITOR_SECRET) {
+        return false;
+    }
+
+    const recebido = String(
+        req.headers[
+            "x-vigia-monitor-secret"
+        ] || ""
+    ).trim();
+
+    if (!recebido) {
+        return false;
+    }
+
+    const esperadoBuffer =
+        Buffer.from(MONITOR_SECRET);
+
+    const recebidoBuffer =
+        Buffer.from(recebido);
+
+    if (
+        esperadoBuffer.length !==
+        recebidoBuffer.length
+    ) {
+        return false;
+    }
+
+    return crypto.timingSafeEqual(
+        esperadoBuffer,
+        recebidoBuffer
+    );
+}
+
+const monitorDeps = {
+    supabase,
+    agora
+};
 
 const server = http.createServer(
     async (req, res) => {
         if (req.method === "OPTIONS") {
             res.writeHead(204, {
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Headers": "Content-Type",
-                "Access-Control-Allow-Methods": "GET,POST,OPTIONS"
+                "Access-Control-Allow-Origin":
+                    "*",
+                "Access-Control-Allow-Headers":
+                    "Content-Type, X-Vigia-Monitor-Secret",
+                "Access-Control-Allow-Methods":
+                    "GET,POST,OPTIONS"
             });
             res.end();
             return;
@@ -385,7 +498,10 @@ const server = http.createServer(
 
         const url = new URL(
             req.url,
-            `http://${req.headers.host || "localhost"}`
+            `http://${
+                req.headers.host ||
+                "localhost"
+            }`
         );
 
         if (
@@ -395,10 +511,16 @@ const server = http.createServer(
             json(res, 200, {
                 ok: true,
                 app: "VIGIA Backend",
-                version: "1.7.2",
-                database: "Supabase/PostgreSQL",
+                version: "1.8.0",
+                database:
+                    "Supabase/PostgreSQL",
+                monitor:
+                    "Mercado Livre server-side",
                 configured: configurado(),
-                supabaseHost: SUPABASE_URL
+                monitorSecretConfigured:
+                    Boolean(MONITOR_SECRET),
+                supabaseHost:
+                    SUPABASE_URL
             });
             return;
         }
@@ -411,11 +533,15 @@ const server = http.createServer(
                 json(res, 503, {
                     ok: false,
                     app: "VIGIA",
-                    version: "1.7.2",
+                    version: "1.8.0",
                     database: "Supabase",
                     configured: false,
-                    supabaseHost: SUPABASE_URL,
-                    error: "Variáveis do Supabase não configuradas."
+                    monitorSecretConfigured:
+                        Boolean(MONITOR_SECRET),
+                    supabaseHost:
+                        SUPABASE_URL,
+                    error:
+                        "Variáveis do Supabase não configuradas."
                 });
                 return;
             }
@@ -429,21 +555,32 @@ const server = http.createServer(
                 json(res, 200, {
                     ok: true,
                     app: "VIGIA",
-                    version: "1.7.2",
+                    version: "1.8.0",
                     database: "Supabase",
                     configured: true,
-                    supabaseHost: SUPABASE_URL,
+                    monitor:
+                        "Mercado Livre server-side",
+                    monitorSecretConfigured:
+                        Boolean(MONITOR_SECRET),
+                    supabaseHost:
+                        SUPABASE_URL,
                     time: agora()
                 });
             } catch (erro) {
                 json(res, 503, {
                     ok: false,
                     app: "VIGIA",
-                    version: "1.7.2",
+                    version: "1.8.0",
                     database: "Supabase",
                     configured: true,
-                    supabaseHost: SUPABASE_URL,
-                    error: String(erro?.message || erro)
+                    monitorSecretConfigured:
+                        Boolean(MONITOR_SECRET),
+                    supabaseHost:
+                        SUPABASE_URL,
+                    error: String(
+                        erro?.message ||
+                        erro
+                    )
                 });
             }
 
@@ -452,10 +589,12 @@ const server = http.createServer(
 
         if (
             req.method === "GET" &&
-            url.pathname === "/api/products"
+            url.pathname ===
+                "/api/products"
         ) {
             try {
-                const products = await listarProdutos();
+                const products =
+                    await listarProdutos();
 
                 json(res, 200, {
                     ok: true,
@@ -465,7 +604,10 @@ const server = http.createServer(
             } catch (erro) {
                 json(res, 500, {
                     ok: false,
-                    error: String(erro?.message || erro)
+                    error: String(
+                        erro?.message ||
+                        erro
+                    )
                 });
             }
 
@@ -474,7 +616,8 @@ const server = http.createServer(
 
         if (
             req.method === "GET" &&
-            url.pathname === "/api/history"
+            url.pathname ===
+                "/api/history"
         ) {
             const productUrl =
                 url.searchParams.get("url");
@@ -489,7 +632,9 @@ const server = http.createServer(
 
             try {
                 const resultado =
-                    await historicoPorUrl(productUrl);
+                    await historicoPorUrl(
+                        productUrl
+                    );
 
                 json(res, 200, {
                     ok: true,
@@ -499,7 +644,67 @@ const server = http.createServer(
             } catch (erro) {
                 json(res, 500, {
                     ok: false,
-                    error: String(erro?.message || erro)
+                    error: String(
+                        erro?.message ||
+                        erro
+                    )
+                });
+            }
+
+            return;
+        }
+
+        if (
+            req.method === "GET" &&
+            url.pathname ===
+                "/api/monitor/status"
+        ) {
+            json(res, 200, {
+                ok: true,
+                version: "1.8.0",
+                ...obterEstadoMonitoramento()
+            });
+            return;
+        }
+
+        if (
+            req.method === "POST" &&
+            url.pathname ===
+                "/api/monitor/run"
+        ) {
+            if (!segredoMonitorValido(req)) {
+                json(res, 401, {
+                    ok: false,
+                    error:
+                        "Monitor não autorizado."
+                });
+                return;
+            }
+
+            try {
+                const resultado =
+                    await executarMonitoramento(
+                        monitorDeps
+                    );
+
+                json(res, 200, {
+                    ok: true,
+                    version: "1.8.0",
+                    ...resultado
+                });
+            } catch (erro) {
+                console.error(
+                    "[VIGIA] Erro no monitor:",
+                    erro
+                );
+
+                json(res, 500, {
+                    ok: false,
+                    version: "1.8.0",
+                    error: String(
+                        erro?.message ||
+                        erro
+                    )
                 });
             }
 
@@ -508,7 +713,8 @@ const server = http.createServer(
 
         if (
             req.method === "POST" &&
-            url.pathname === "/api/products/sync"
+            url.pathname ===
+                "/api/products/sync"
         ) {
             try {
                 const payload =
@@ -520,7 +726,8 @@ const server = http.createServer(
                 if (!produto?.url) {
                     json(res, 400, {
                         ok: false,
-                        error: "Produto sem URL."
+                        error:
+                            "Produto sem URL."
                     });
                     return;
                 }
@@ -528,7 +735,8 @@ const server = http.createServer(
                 const id =
                     await upsertProduto(
                         produto,
-                        payload.appVersion || "1.7.2"
+                        payload.appVersion ||
+                            "1.8.0"
                     );
 
                 const historyCount =
@@ -551,7 +759,10 @@ const server = http.createServer(
 
                 json(res, 500, {
                     ok: false,
-                    error: String(erro?.message || erro)
+                    error: String(
+                        erro?.message ||
+                        erro
+                    )
                 });
             }
 
@@ -570,13 +781,19 @@ server.listen(
     HOST,
     () => {
         console.log(
-            `VIGIA Backend V1.7.2 ativo em http://${HOST}:${PORT}`
+            `VIGIA Backend V1.8.0 ativo em http://${HOST}:${PORT}`
         );
 
         console.log(
             configurado()
                 ? "Supabase configurado."
                 : "ATENÇÃO: Supabase ainda não configurado."
+        );
+
+        console.log(
+            MONITOR_SECRET
+                ? "Monitor remoto protegido e pronto."
+                : "ATENÇÃO: MONITOR_SECRET não configurado; /api/monitor/run ficará bloqueado."
         );
     }
 );

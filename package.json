@@ -1,10 +1,11 @@
 {
   "name": "vigia-backend",
-  "version": "1.7.2",
+  "version": "1.8.0",
   "private": true,
-  "description": "Backend VIGIA com Supabase - correção de URL e autenticação por secret key.",
+  "description": "VIGIA Backend V1.8.0 - Supabase + monitoramento server-side inicial do Mercado Livre.",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "check": "node --check server.js && node --check monitor.js"
   },
   "engines": {
     "node": ">=18"
