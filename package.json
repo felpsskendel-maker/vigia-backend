@@ -1,0 +1,12 @@
+{
+  "name": "vigia-backend",
+  "version": "1.7.2",
+  "private": true,
+  "description": "Backend VIGIA com Supabase - correção de URL e autenticação por secret key.",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
