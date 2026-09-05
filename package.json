@@ -1,0 +1,12 @@
+{
+  "name": "vigia-backend",
+  "version": "1.7.0",
+  "private": true,
+  "description": "Backend do VIGIA - histórico e sincronização de produtos.",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
