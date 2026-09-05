@@ -1,6 +1,6 @@
 // ======================================================
 // VIGIA BACKEND
-// V1.8.0
+// V1.8.1
 // Desenvolvedor: Felipe Skendel
 //
 // Supabase/PostgreSQL + monitoramento server-side.
@@ -271,7 +271,7 @@ async function upsertProduto(produto, appVersion) {
         ativo: produto.ativo !== false,
         dados: produto,
         app_version:
-            appVersion || "1.8.0",
+            appVersion || "1.8.1",
         updated_at: agora()
     };
 
@@ -511,11 +511,11 @@ const server = http.createServer(
             json(res, 200, {
                 ok: true,
                 app: "VIGIA Backend",
-                version: "1.8.0",
+                version: "1.8.1",
                 database:
                     "Supabase/PostgreSQL",
                 monitor:
-                    "Mercado Livre server-side",
+                    "Ofertas server-side",
                 configured: configurado(),
                 monitorSecretConfigured:
                     Boolean(MONITOR_SECRET),
@@ -533,7 +533,7 @@ const server = http.createServer(
                 json(res, 503, {
                     ok: false,
                     app: "VIGIA",
-                    version: "1.8.0",
+                    version: "1.8.1",
                     database: "Supabase",
                     configured: false,
                     monitorSecretConfigured:
@@ -555,11 +555,11 @@ const server = http.createServer(
                 json(res, 200, {
                     ok: true,
                     app: "VIGIA",
-                    version: "1.8.0",
+                    version: "1.8.1",
                     database: "Supabase",
                     configured: true,
                     monitor:
-                        "Mercado Livre server-side",
+                        "Ofertas server-side",
                     monitorSecretConfigured:
                         Boolean(MONITOR_SECRET),
                     supabaseHost:
@@ -570,7 +570,7 @@ const server = http.createServer(
                 json(res, 503, {
                     ok: false,
                     app: "VIGIA",
-                    version: "1.8.0",
+                    version: "1.8.1",
                     database: "Supabase",
                     configured: true,
                     monitorSecretConfigured:
@@ -661,7 +661,7 @@ const server = http.createServer(
         ) {
             json(res, 200, {
                 ok: true,
-                version: "1.8.0",
+                version: "1.8.1",
                 ...obterEstadoMonitoramento()
             });
             return;
@@ -689,7 +689,7 @@ const server = http.createServer(
 
                 json(res, 200, {
                     ok: true,
-                    version: "1.8.0",
+                    version: "1.8.1",
                     ...resultado
                 });
             } catch (erro) {
@@ -700,7 +700,7 @@ const server = http.createServer(
 
                 json(res, 500, {
                     ok: false,
-                    version: "1.8.0",
+                    version: "1.8.1",
                     error: String(
                         erro?.message ||
                         erro
@@ -736,7 +736,7 @@ const server = http.createServer(
                     await upsertProduto(
                         produto,
                         payload.appVersion ||
-                            "1.8.0"
+                            "1.8.1"
                     );
 
                 const historyCount =
@@ -781,7 +781,7 @@ server.listen(
     HOST,
     () => {
         console.log(
-            `VIGIA Backend V1.8.0 ativo em http://${HOST}:${PORT}`
+            `VIGIA Backend V1.8.1 ativo em http://${HOST}:${PORT}`
         );
 
         console.log(

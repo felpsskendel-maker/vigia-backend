@@ -1,14 +1,20 @@
 // ======================================================
 // VIGIA MONITOR SERVER-SIDE
-// V1.8.0
+// V1.8.1
 // Desenvolvedor: Felipe Skendel
 //
-// Primeira implementação:
-//   Mercado Livre
+// Evolução da V1.8.0:
+// - mantém monitoramento server-side;
+// - passa a ler as ofertas já encontradas em `comparações`;
+// - grava histórico separado em `offer_history`;
+// - primeiro suporte de ofertas na nuvem:
+//      Mercado Livre
+//      KaBuM
 //
-// Não depende do Chrome.
-// Lê produtos ativos do Supabase, acessa a página,
-// captura o preço e grava a leitura no price_history.
+// IMPORTANTE:
+// O produto principal pode ser Amazon, Magalu, Shopee etc.
+// Mesmo assim, suas ofertas conhecidas do Mercado Livre/KaBuM
+// podem ser verificadas pelo servidor.
 // ======================================================
 
 const USER_AGENT =
@@ -17,8 +23,9 @@ const USER_AGENT =
     "Chrome/152.0.0.0 Safari/537.36";
 
 const TIMEOUT_MS = 20_000;
-const ESPERA_ENTRE_PRODUTOS_MS = 1_500;
-const LIMITE_POR_EXECUCAO = 20;
+const ESPERA_ENTRE_REQUISICOES_MS = 1_500;
+const LIMITE_PRODUTOS_POR_EXECUCAO = 20;
+const LIMITE_OFERTAS_POR_PRODUTO = 12;
 
 let estado = {
     running: false,
@@ -53,14 +60,12 @@ function numeroPreco(valor) {
         return null;
     }
 
-    if (
-        typeof valor === "number"
-    ) {
+    if (typeof valor === "number") {
         return (
             Number.isFinite(valor) &&
             valor > 0
         )
-            ? valor
+            ? Math.round(valor * 100) / 100
             : null;
     }
 
@@ -119,8 +124,7 @@ function numeroPreco(valor) {
         }
     }
 
-    const numero =
-        Number(texto);
+    const numero = Number(texto);
 
     if (
         !Number.isFinite(numero) ||
@@ -134,28 +138,67 @@ function numeroPreco(valor) {
     ) / 100;
 }
 
-function eMercadoLivre(produto) {
-    const url =
-        String(produto?.url || "")
+function normalizarLoja(loja, url = "") {
+    const nome =
+        String(loja || "")
             .toLowerCase();
 
-    const loja =
-        String(produto?.loja || "")
+    const endereco =
+        String(url || "")
             .toLowerCase();
 
-    return (
-        url.includes(
+    if (
+        nome.includes("mercado livre") ||
+        nome.includes("mercadolivre") ||
+        endereco.includes(
             "mercadolivre.com.br"
         ) ||
-        url.includes(
+        endereco.includes(
             "mercadolibre.com"
-        ) ||
-        loja.includes(
-            "mercado livre"
-        ) ||
-        loja.includes(
-            "mercadolivre"
         )
+    ) {
+        return "Mercado Livre";
+    }
+
+    if (
+        nome.includes("kabum") ||
+        endereco.includes("kabum.com.br")
+    ) {
+        return "KaBuM";
+    }
+
+    if (
+        nome.includes("amazon") ||
+        endereco.includes("amazon.com.br")
+    ) {
+        return "Amazon";
+    }
+
+    if (
+        nome.includes("magalu") ||
+        nome.includes("magazine luiza") ||
+        endereco.includes("magazineluiza.com.br")
+    ) {
+        return "Magalu";
+    }
+
+    if (
+        nome.includes("shopee") ||
+        endereco.includes("shopee.com.br")
+    ) {
+        return "Shopee";
+    }
+
+    return textoLimpo(loja) || "Outra";
+}
+
+function lojaSuportadaServidor(loja, url) {
+    const normalizada =
+        normalizarLoja(loja, url);
+
+    return (
+        normalizada === "Mercado Livre" ||
+        normalizada === "KaBuM"
     );
 }
 
@@ -181,7 +224,7 @@ function extrairJsonLd(html) {
                 JSON.parse(bruto)
             );
         } catch {
-            // Alguns sites inserem JSON-LD inválido.
+            // JSON-LD inválido: ignora e continua.
         }
     }
 
@@ -200,6 +243,7 @@ function achatarJsonLd(valor, saida = []) {
                 saida
             );
         }
+
         return saida;
     }
 
@@ -209,7 +253,9 @@ function achatarJsonLd(valor, saida = []) {
         saida.push(valor);
 
         if (
-            Array.isArray(valor["@graph"])
+            Array.isArray(
+                valor["@graph"]
+            )
         ) {
             achatarJsonLd(
                 valor["@graph"],
@@ -254,18 +300,14 @@ function extrairPrecoJsonLd(html) {
                 oferta?.highPrice
             ];
 
-            for (
-                const candidato
-                of candidatos
-            ) {
+            for (const candidato of candidatos) {
                 const preco =
                     numeroPreco(candidato);
 
                 if (preco) {
                     return {
                         preco,
-                        fonte:
-                            "JSON-LD"
+                        fonte: "JSON-LD"
                     };
                 }
             }
@@ -372,8 +414,47 @@ function extrairPrecoMercadoLivre(html) {
         if (preco) {
             return {
                 preco,
-                fonte:
-                    "HTML"
+                fonte: "HTML"
+            };
+        }
+    }
+
+    return null;
+}
+
+function extrairPrecoKabum(html) {
+    const porJsonLd =
+        extrairPrecoJsonLd(html);
+
+    if (porJsonLd) {
+        return porJsonLd;
+    }
+
+    const porMeta =
+        extrairPrecoMeta(html);
+
+    if (porMeta) {
+        return porMeta;
+    }
+
+    const regexes = [
+        /"price"\s*:\s*"?(?:R\$\s*)?([\d.,]+)"?/i,
+        /"finalPrice"\s*:\s*"?([\d.,]+)"?/i,
+        /"pixPrice"\s*:\s*"?([\d.,]+)"?/i,
+        /R\$\s*([\d.]+,\d{2})/i
+    ];
+
+    for (const regex of regexes) {
+        const match =
+            html.match(regex);
+
+        const preco =
+            numeroPreco(match?.[1]);
+
+        if (preco) {
+            return {
+                preco,
+                fonte: "HTML"
             };
         }
     }
@@ -481,16 +562,180 @@ async function selecionarProdutos(deps) {
 
     return (
         await supabase(
-            `products?ativo=eq.true&select=id,url,nome,loja,preco,preco_efetivo,preco_alvo,dados,app_version,updated_at&order=updated_at.asc&limit=${LIMITE_POR_EXECUCAO}`,
+            `products?ativo=eq.true&select=id,url,nome,loja,preco,preco_efetivo,preco_alvo,dados,app_version,updated_at&order=updated_at.asc&limit=${LIMITE_PRODUTOS_POR_EXECUCAO}`,
             { method: "GET" }
         )
     ) || [];
 }
 
-async function gravarSucesso(
+function ofertasConhecidas(produto) {
+    const dados =
+        produto?.dados &&
+        typeof produto.dados === "object"
+            ? produto.dados
+            : {};
+
+    const arrays = [
+        dados["comparações"],
+        dados.comparacoes
+    ];
+
+    let comparacoes = [];
+
+    for (const valor of arrays) {
+        if (Array.isArray(valor)) {
+            comparacoes = valor;
+            break;
+        }
+    }
+
+    const porChave = new Map();
+
+    for (
+        const oferta of comparacoes
+            .slice(
+                0,
+                LIMITE_OFERTAS_POR_PRODUTO
+            )
+    ) {
+        if (!oferta?.url) {
+            continue;
+        }
+
+        const loja =
+            normalizarLoja(
+                oferta.loja,
+                oferta.url
+            );
+
+        const chave =
+            `${loja}|${oferta.url}`;
+
+        if (!porChave.has(chave)) {
+            porChave.set(
+                chave,
+                {
+                    ...oferta,
+                    loja
+                }
+            );
+        }
+    }
+
+    return [
+        ...porChave.values()
+    ];
+}
+
+async function ultimoPrecoOferta(
+    deps,
+    productId,
+    loja,
+    url
+) {
+    const { supabase } = deps;
+
+    const linhas =
+        await supabase(
+            `offer_history?product_id=eq.${encodeURIComponent(
+                productId
+            )}&loja=eq.${encodeURIComponent(
+                loja
+            )}&url=eq.${encodeURIComponent(
+                url
+            )}&select=preco,captured_at&order=captured_at.desc&limit=1`,
+            { method: "GET" }
+        ) || [];
+
+    if (!linhas.length) {
+        return null;
+    }
+
+    const numero =
+        Number(linhas[0].preco);
+
+    return (
+        Number.isFinite(numero) &&
+        numero > 0
+    )
+        ? numero
+        : null;
+}
+
+async function gravarHistoricoOfertaSeMudou(
+    deps,
+    productId,
+    loja,
+    url,
+    preco
+) {
+    const {
+        supabase,
+        agora
+    } = deps;
+
+    const anterior =
+        await ultimoPrecoOferta(
+            deps,
+            productId,
+            loja,
+            url
+        );
+
+    if (
+        anterior !== null &&
+        Math.abs(
+            Number(anterior) -
+            Number(preco)
+        ) < 0.009
+    ) {
+        return {
+            inserted: false,
+            previousPrice:
+                anterior
+        };
+    }
+
+    const instante = agora();
+
+    await supabase(
+        "offer_history?on_conflict=product_id,loja,url,captured_at,preco",
+        {
+            method: "POST",
+            headers: {
+                Prefer:
+                    "resolution=ignore-duplicates,return=minimal"
+            },
+            body: JSON.stringify([
+                {
+                    product_id:
+                        productId,
+                    loja,
+                    url,
+                    preco:
+                        Number(preco),
+                    captured_at:
+                        instante
+                }
+            ])
+        }
+    );
+
+    return {
+        inserted: true,
+        previousPrice:
+            anterior,
+        capturedAt:
+            instante
+    };
+}
+
+async function atualizarOfertaNoProduto(
     deps,
     produto,
-    captura
+    ofertaOriginal,
+    captura,
+    historico
 ) {
     const {
         supabase,
@@ -498,15 +743,287 @@ async function gravarSucesso(
     } = deps;
 
     const instante = agora();
-    const preco =
-        Number(captura.preco);
 
-    const dadosAnteriores =
+    const dados =
         produto?.dados &&
-        typeof produto.dados ===
-            "object"
+        typeof produto.dados === "object"
             ? produto.dados
             : {};
+
+    const chaveComparacoes =
+        Array.isArray(
+            dados["comparações"]
+        )
+            ? "comparações"
+            : "comparacoes";
+
+    const comparacoes =
+        Array.isArray(
+            dados[chaveComparacoes]
+        )
+            ? dados[chaveComparacoes]
+                .map(item => ({ ...item }))
+            : [];
+
+    const indice =
+        comparacoes.findIndex(
+            item =>
+                item?.url ===
+                ofertaOriginal.url
+        );
+
+    const ofertaAtualizada = {
+        ...ofertaOriginal,
+        loja:
+            normalizarLoja(
+                ofertaOriginal.loja,
+                ofertaOriginal.url
+            ),
+        preco:
+            Number(captura.preco),
+        precoEfetivo:
+            Number(captura.preco),
+        monitorNuvem: {
+            ativo: true,
+            status: "ok",
+            fonte:
+                captura.fonte,
+            ultimaVerificacao:
+                instante,
+            urlFinal:
+                captura.finalUrl,
+            precoCapturado:
+                Number(
+                    captura.preco
+                ),
+            historicoInserido:
+                Boolean(
+                    historico.inserted
+                )
+        }
+    };
+
+    if (indice >= 0) {
+        comparacoes[indice] =
+            ofertaAtualizada;
+    } else {
+        comparacoes.push(
+            ofertaAtualizada
+        );
+    }
+
+    const dadosNovos = {
+        ...dados,
+        [chaveComparacoes]:
+            comparacoes,
+        monitorNuvem: {
+            ...(
+                dados.monitorNuvem ||
+                {}
+            ),
+            ofertas: {
+                ativo: true,
+                ultimaVerificacao:
+                    instante
+            }
+        }
+    };
+
+    await supabase(
+        `products?id=eq.${encodeURIComponent(
+            produto.id
+        )}`,
+        {
+            method: "PATCH",
+            headers: {
+                Prefer:
+                    "return=minimal"
+            },
+            body: JSON.stringify({
+                dados: dadosNovos,
+                app_version:
+                    "1.8.1",
+                updated_at:
+                    instante
+            })
+        }
+    );
+}
+
+async function registrarFalhaOferta(
+    deps,
+    produto,
+    ofertaOriginal,
+    erro
+) {
+    const {
+        supabase,
+        agora
+    } = deps;
+
+    const instante = agora();
+
+    const dados =
+        produto?.dados &&
+        typeof produto.dados === "object"
+            ? produto.dados
+            : {};
+
+    const chaveComparacoes =
+        Array.isArray(
+            dados["comparações"]
+        )
+            ? "comparações"
+            : "comparacoes";
+
+    const comparacoes =
+        Array.isArray(
+            dados[chaveComparacoes]
+        )
+            ? dados[chaveComparacoes]
+                .map(item => ({ ...item }))
+            : [];
+
+    const indice =
+        comparacoes.findIndex(
+            item =>
+                item?.url ===
+                ofertaOriginal.url
+        );
+
+    if (indice >= 0) {
+        comparacoes[indice] = {
+            ...comparacoes[indice],
+            monitorNuvem: {
+                ...(
+                    comparacoes[indice]
+                        ?.monitorNuvem ||
+                    {}
+                ),
+                ativo: true,
+                status: "erro",
+                ultimaVerificacao:
+                    instante,
+                erro: String(
+                    erro?.message ||
+                    erro
+                ).slice(0, 500)
+            }
+        };
+    }
+
+    const dadosNovos = {
+        ...dados,
+        [chaveComparacoes]:
+            comparacoes,
+        monitorNuvem: {
+            ...(
+                dados.monitorNuvem ||
+                {}
+            ),
+            ofertas: {
+                ativo: true,
+                ultimaVerificacao:
+                    instante
+            }
+        }
+    };
+
+    await supabase(
+        `products?id=eq.${encodeURIComponent(
+            produto.id
+        )}`,
+        {
+            method: "PATCH",
+            headers: {
+                Prefer:
+                    "return=minimal"
+            },
+            body: JSON.stringify({
+                dados: dadosNovos,
+                app_version:
+                    "1.8.1",
+                updated_at:
+                    instante
+            })
+        }
+    );
+}
+
+async function capturarOferta(oferta) {
+    const loja =
+        normalizarLoja(
+            oferta.loja,
+            oferta.url
+        );
+
+    const pagina =
+        await baixarPagina(
+            oferta.url
+        );
+
+    let captura = null;
+
+    if (
+        loja === "Mercado Livre"
+    ) {
+        captura =
+            extrairPrecoMercadoLivre(
+                pagina.html
+            );
+    } else if (
+        loja === "KaBuM"
+    ) {
+        captura =
+            extrairPrecoKabum(
+                pagina.html
+            );
+    }
+
+    if (!captura?.preco) {
+        throw new Error(
+            `Preço não encontrado no HTML de ${loja}.`
+        );
+    }
+
+    return {
+        ...captura,
+        loja,
+        titulo:
+            extrairTitulo(
+                pagina.html
+            ),
+        finalUrl:
+            pagina.finalUrl
+    };
+}
+
+async function verificarOferta(
+    deps,
+    produto,
+    oferta
+) {
+    const captura =
+        await capturarOferta(
+            oferta
+        );
+
+    const historico =
+        await gravarHistoricoOfertaSeMudou(
+            deps,
+            produto.id,
+            captura.loja,
+            oferta.url,
+            captura.preco
+        );
+
+    await atualizarOfertaNoProduto(
+        deps,
+        produto,
+        oferta,
+        captura,
+        historico
+    );
 
     const alvo =
         Number.isFinite(
@@ -518,207 +1035,48 @@ async function gravarSucesso(
             : (
                 Number.isFinite(
                     Number(
-                        dadosAnteriores
+                        produto?.dados
                             ?.precoAlvo
                     )
                 )
                     ? Number(
-                        dadosAnteriores
+                        produto.dados
                             .precoAlvo
                     )
                     : null
             );
 
-    const dadosNovos = {
-        ...dadosAnteriores,
-        url: produto.url,
-        nome:
+    return {
+        productId:
+            produto.id,
+        productName:
             produto.nome ||
-            dadosAnteriores.nome ||
-            captura.titulo ||
+            produto?.dados?.produto ||
+            produto?.dados?.nome ||
             null,
         loja:
-            produto.loja ||
-            dadosAnteriores.loja ||
-            "Mercado Livre",
-        precoAtual: preco,
-        precoEfetivo: preco,
-        ultimaAtualizacao:
-            instante,
-        monitorNuvem: {
-            ativo: true,
-            loja:
-                "Mercado Livre",
-            status: "ok",
-            fonte:
-                captura.fonte,
-            ultimaVerificacao:
-                instante,
-            urlFinal:
-                captura.finalUrl,
-            precoCapturado:
-                preco,
-            atingiuAlvo:
-                alvo !== null
-                    ? preco <= alvo
-                    : false
-        }
-    };
-
-    await supabase(
-        `products?id=eq.${encodeURIComponent(
-            produto.id
-        )}`,
-        {
-            method: "PATCH",
-            headers: {
-                Prefer:
-                    "return=minimal"
-            },
-            body: JSON.stringify({
-                preco,
-                preco_efetivo:
-                    preco,
-                dados: dadosNovos,
-                app_version:
-                    "1.8.0",
-                updated_at:
-                    instante
-            })
-        }
-    );
-
-    await supabase(
-        "price_history?on_conflict=product_id,captured_at,preco",
-        {
-            method: "POST",
-            headers: {
-                Prefer:
-                    "resolution=ignore-duplicates,return=minimal"
-            },
-            body: JSON.stringify([
-                {
-                    product_id:
-                        produto.id,
-                    preco,
-                    captured_at:
-                        instante
-                }
-            ])
-        }
-    );
-
-    return {
-        id: produto.id,
-        nome:
-            produto.nome ||
-            captura.titulo ||
-            null,
-        url: produto.url,
-        preco,
-        precoAlvo: alvo,
+            captura.loja,
+        url:
+            oferta.url,
+        preco:
+            Number(
+                captura.preco
+            ),
+        precoAnteriorHistorico:
+            historico.previousPrice,
+        historyInserted:
+            historico.inserted,
+        precoAlvo:
+            alvo,
         atingiuAlvo:
             alvo !== null
-                ? preco <= alvo
+                ? Number(
+                    captura.preco
+                ) <= alvo
                 : false,
-        fonte: captura.fonte
+        fonte:
+            captura.fonte
     };
-}
-
-async function gravarFalha(
-    deps,
-    produto,
-    erro
-) {
-    const {
-        supabase,
-        agora
-    } = deps;
-
-    const instante = agora();
-
-    const dadosAnteriores =
-        produto?.dados &&
-        typeof produto.dados ===
-            "object"
-            ? produto.dados
-            : {};
-
-    const dadosNovos = {
-        ...dadosAnteriores,
-        monitorNuvem: {
-            ...(
-                dadosAnteriores
-                    .monitorNuvem ||
-                {}
-            ),
-            ativo: true,
-            loja:
-                "Mercado Livre",
-            status: "erro",
-            ultimaVerificacao:
-                instante,
-            erro: String(
-                erro?.message ||
-                erro
-            ).slice(0, 500)
-        }
-    };
-
-    await supabase(
-        `products?id=eq.${encodeURIComponent(
-            produto.id
-        )}`,
-        {
-            method: "PATCH",
-            headers: {
-                Prefer:
-                    "return=minimal"
-            },
-            body: JSON.stringify({
-                dados: dadosNovos,
-                app_version:
-                    "1.8.0",
-                updated_at:
-                    instante
-            })
-        }
-    );
-}
-
-async function verificarMercadoLivre(
-    deps,
-    produto
-) {
-    const pagina =
-        await baixarPagina(
-            produto.url
-        );
-
-    const captura =
-        extrairPrecoMercadoLivre(
-            pagina.html
-        );
-
-    if (!captura?.preco) {
-        throw new Error(
-            "Preço não encontrado no HTML do Mercado Livre."
-        );
-    }
-
-    return gravarSucesso(
-        deps,
-        produto,
-        {
-            ...captura,
-            titulo:
-                extrairTitulo(
-                    pagina.html
-                ),
-            finalUrl:
-                pagina.finalUrl
-        }
-    );
 }
 
 async function executarMonitoramento(
@@ -742,6 +1100,8 @@ async function executarMonitoramento(
         startedAt:
             estado.lastStartedAt,
         finishedAt: null,
+
+        // Compatibilidade com V1.8.0
         selected: 0,
         supported: 0,
         checked: 0,
@@ -749,6 +1109,17 @@ async function executarMonitoramento(
         failed: 0,
         ignoredUnsupported: 0,
         hitsTarget: 0,
+
+        // Métricas V1.8.1
+        productsSelected: 0,
+        offersFound: 0,
+        offersSupported: 0,
+        offersChecked: 0,
+        offersSuccess: 0,
+        offersFailed: 0,
+        offersIgnoredUnsupported: 0,
+        historyInserted: 0,
+
         items: []
     };
 
@@ -761,83 +1132,140 @@ async function executarMonitoramento(
         resultado.selected =
             produtos.length;
 
+        resultado.productsSelected =
+            produtos.length;
+
         for (
-            let i = 0;
-            i < produtos.length;
-            i++
+            let p = 0;
+            p < produtos.length;
+            p++
         ) {
             const produto =
-                produtos[i];
+                produtos[p];
 
-            if (!eMercadoLivre(produto)) {
-                resultado
-                    .ignoredUnsupported++;
-                continue;
-            }
+            const ofertas =
+                ofertasConhecidas(
+                    produto
+                );
 
-            resultado.supported++;
-            resultado.checked++;
+            resultado.offersFound +=
+                ofertas.length;
 
-            try {
-                const item =
-                    await verificarMercadoLivre(
-                        deps,
-                        produto
-                    );
-
-                resultado.success++;
+            for (
+                let i = 0;
+                i < ofertas.length;
+                i++
+            ) {
+                const oferta =
+                    ofertas[i];
 
                 if (
-                    item.atingiuAlvo
+                    !lojaSuportadaServidor(
+                        oferta.loja,
+                        oferta.url
+                    )
                 ) {
-                    resultado.hitsTarget++;
+                    resultado
+                        .offersIgnoredUnsupported++;
+
+                    resultado
+                        .ignoredUnsupported++;
+
+                    continue;
                 }
 
-                resultado.items.push({
-                    ok: true,
-                    ...item
-                });
-            } catch (erro) {
-                resultado.failed++;
+                resultado
+                    .offersSupported++;
+
+                resultado.supported++;
+
+                resultado
+                    .offersChecked++;
+
+                resultado.checked++;
 
                 try {
-                    await gravarFalha(
-                        deps,
-                        produto,
-                        erro
-                    );
-                } catch (
-                    erroGravacao
-                ) {
-                    console.error(
-                        "[VIGIA] Falha ao registrar erro do monitor:",
+                    const item =
+                        await verificarOferta(
+                            deps,
+                            produto,
+                            oferta
+                        );
+
+                    resultado
+                        .offersSuccess++;
+
+                    resultado.success++;
+
+                    if (
+                        item.historyInserted
+                    ) {
+                        resultado
+                            .historyInserted++;
+                    }
+
+                    if (
+                        item.atingiuAlvo
+                    ) {
+                        resultado
+                            .hitsTarget++;
+                    }
+
+                    resultado.items.push({
+                        ok: true,
+                        type:
+                            "comparison-offer",
+                        ...item
+                    });
+                } catch (erro) {
+                    resultado
+                        .offersFailed++;
+
+                    resultado.failed++;
+
+                    try {
+                        await registrarFalhaOferta(
+                            deps,
+                            produto,
+                            oferta,
+                            erro
+                        );
+                    } catch (
                         erroGravacao
-                    );
+                    ) {
+                        console.error(
+                            "[VIGIA] Falha ao registrar erro da oferta:",
+                            erroGravacao
+                        );
+                    }
+
+                    resultado.items.push({
+                        ok: false,
+                        type:
+                            "comparison-offer",
+                        productId:
+                            produto.id,
+                        productName:
+                            produto.nome ||
+                            produto?.dados?.produto ||
+                            null,
+                        loja:
+                            normalizarLoja(
+                                oferta.loja,
+                                oferta.url
+                            ),
+                        url:
+                            oferta.url,
+                        error:
+                            String(
+                                erro?.message ||
+                                erro
+                            )
+                    });
                 }
 
-                resultado.items.push({
-                    ok: false,
-                    id:
-                        produto.id,
-                    nome:
-                        produto.nome ||
-                        null,
-                    url:
-                        produto.url,
-                    error:
-                        String(
-                            erro?.message ||
-                            erro
-                        )
-                });
-            }
-
-            if (
-                i <
-                produtos.length - 1
-            ) {
                 await dormir(
-                    ESPERA_ENTRE_PRODUTOS_MS
+                    ESPERA_ENTRE_REQUISICOES_MS
                 );
             }
         }
@@ -876,5 +1304,8 @@ module.exports = {
 
     // Exportados para testes locais.
     numeroPreco,
-    extrairPrecoMercadoLivre
+    extrairPrecoMercadoLivre,
+    extrairPrecoKabum,
+    normalizarLoja,
+    ofertasConhecidas
 };

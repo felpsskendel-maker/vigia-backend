@@ -1,8 +1,8 @@
 {
   "name": "vigia-backend",
-  "version": "1.8.0",
+  "version": "1.8.1",
   "private": true,
-  "description": "VIGIA Backend V1.8.0 - Supabase + monitoramento server-side inicial do Mercado Livre.",
+  "description": "VIGIA Backend V1.8.1 - Supabase + monitoramento server-side das ofertas comparadas (Mercado Livre e KaBuM).",
   "scripts": {
     "start": "node server.js",
     "check": "node --check server.js && node --check monitor.js"
